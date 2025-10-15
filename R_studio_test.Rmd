@@ -1,0 +1,168 @@
+---
+title: "NEW_test_for_Shubham"
+output: html_document
+date: "2025-07-15"
+---
+
+Loading the Required Packages
+
+```{r}
+library(urca)
+library(vars)
+library(mFilter)
+library(tseries)
+library(forecast)
+library(tidyverse)
+```
+
+```{r}
+library(priceR)
+show_countries()
+```
+
+
+reload data in here
+
+```{r}
+library(readxl)
+Final_Data_for_Research <- read_excel("/Users/shubhamupreti/Documents/Lumiere Research/Final_Data_for_Research.xlsx")
+
+colnames(Final_Data_for_Research) <- Final_Data_for_Research[1,]
+Final_Data_for_Research <- Final_Data_for_Research[-1,]
+
+```
+
+cleaning the data
+
+```{r}
+Final_Data_for_Research$`Global Oil Price` <- as.numeric(Final_Data_for_Research$`Global Oil Price`)
+Final_Data_for_Research$`Foreign Exchange Reserve` <- as.numeric(Final_Data_for_Research$`Foreign Exchange Reserve`)
+```
+
+
+adjust data for inflation
+
+```{r}
+typeof(Final_Data_for_Research$`Global Oil Price`)
+length(Final_Data_for_Research$`Global Oil Price`)
+length(1979:2021)
+plot(adjust_for_inflation(Final_Data_for_Research$`Global Oil Price`, 1979:2021, country="US", 2021))
+plot(adjust_for_inflation(Final_Data_for_Research$`Foreign Exchange Reserve`, 1979:2021, country="US", 2021))
+
+Final_Data_for_Research$op_inf <- adjust_for_inflation(Final_Data_for_Research$`Global Oil Price`, 1979:2021, country="US", 2021)
+
+Final_Data_for_Research$reserex_inf <- adjust_for_inflation(Final_Data_for_Research$`Foreign Exchange Reserve`, 1979:2021, country="US", 2021)
+```
+
+
+determine persistence (acf,pacf)
+
+Bullet Points
+1. ACF -  Captures total correlation 
+2. PACF - Isolates the direct correlation
+
+Lag of 5 means you go back 5 (5,4,3,2,1)
+```{r}
+acf(dd_reserve)
+acf(dd_op)
+pacf(dd_reserve)
+pacf(dd_op)
+```
+
+
+do a transformation of the data (take first differences recheck first part)
+```{r}
+diff_op <- diff(Final_Data_for_Research$op_inf)
+diff_reserve <- diff(Final_Data_for_Research$reserex_inf)
+dd_op <- diff(diff_op)
+dd_reserve <- diff(diff_reserve)
+```
+
+#Replace diff_op with dd_op and diff_reserve with dd_reserve
+
+also do the augmented dickey fuller test here
+
+1. In order to satisfy the ADF test and other test to come, we take the second difference of our time series.
+2. ADF test is the test of stationarity, we passed almost all of the tests.
+```{r}
+library(tseries)
+adf.test(dd_op, k = 4)
+adf.test(dd_reserve, k = 4)
+plot(dd_op)
+plot(dd_reserve)
+```
+Adding differences to dataset
+```{r}
+ts_diff <- data.frame(dd_reserve = dd_reserve, dd_op = dd_op)
+```
+
+find optimal lags
+1. We used VAR select package to find out the optimal lags
+2. AIC criterion test showed that a lag of 4 was optimal
+3. You can predict the acceleration rate of exchange reserve of nepal from 4 points of time series (lag4)
+```{r}
+library(vars)
+library(dplyr)
+
+# Create the time series data with only inflation-adjusted variables
+ts_corrected <- Final_Data_for_Research %>%
+  dplyr::select(op_inf, reserex_inf)
+
+# Estimate VAR with lag = 1 (as per SC), or 10 if justified
+VAR_model <- VARselect(ts_diff, lag.max = 4, type = "const")  # Choose lag 4 as the difference
+VAR_model
+```
+Select optimal lag order
+```{r}
+lag_selection <- VARselect(ts_diff, lag.max = 4, type = "const")
+print(lag_selection$selection)
+```
+Fit the VAR model using that lag
+```{r}
+p_opt <- 4   # or whichever criterion you prefer
+var_fit <- VAR(ts_diff, p = 4, type = "const")
+```
+Diagnostic checks
+
+1. Serial test is testing for the correlation between the residuals (we want it to be uncorrelated so that we can reject the null hypothesis)
+2. ARCH tests (Test for Heteroskedasticity) constant variance over time and the assumption is met.
+```{r}
+serial.test(var_fit,   lags.pt = 12,                type = "PT.asymptotic")
+arch.test(var_fit,     lags.multi = 12,            multivariate.only = TRUE)
+
+```
+Normality Test Results 
+1. The Normality tests do fail but upon inspection of residuals it's likely due to the sample size and it's not a significant concern.
+2. Stability Test looks whether it is susceptible to outliers and we do not have any, so we passed the stability test.
+```{r}
+normality.test(var_fit,multivariate.only = TRUE)
+stability(var_fit,     type = "OLS-CUSUM") %>% plot()
+```
+Granger-causality tests
+
+1. This is the test for oil price causing the forex reserve, we have significant results for oil price causing the forex reserve.
+2. For the reverse, forex reserve do not cause global oil price.
+```{r}
+print(causality(var_fit, cause = "dd_op")$Granger)        # Oil → FX
+print(causality(var_fit, cause = "dd_reserve")$Granger)   # FX → Oil
+```
+Impulse Response Function
+1. What happens to reserve rate when shocks happens to oil price. (1st graph is the important one.)
+
+```{r}
+irf_res_on_op <- irf(var_fit,
+                     impulse  = "dd_op",
+                     response = "dd_reserve",
+                     n.ahead  = 10,
+                     boot     = TRUE)
+plot(irf_res_on_op, main = "IRF: FX Reserves ← Oil Price Shock")
+
+irf_op_on_res <- irf(var_fit,
+                     impulse  = "dd_reserve",
+                     response = "dd_op",
+                     n.ahead  = 10,
+                     boot     = TRUE)
+plot(irf_op_on_res, main = "IRF: Oil Price ← FX Reserves Shock")
+```
+
+
